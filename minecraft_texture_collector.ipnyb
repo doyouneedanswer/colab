@@ -1,0 +1,258 @@
+# 1. Установка зависимостей
+!pip install beautifulsoup4 Pillow requests
+
+# 2. Создаем create_folders.py
+%%writefile create_folders.py
+import os
+
+def create_dataset_structure():
+    """
+    Создает структуру папок для датасета
+    """
+    folders = [
+        # Текстуры
+        "dataset/textures/blocks/natural",
+        "dataset/textures/blocks/ores",
+        "dataset/textures/blocks/vegetation",
+        "dataset/textures/blocks/building",
+        "dataset/textures/special/gui",
+        "dataset/textures/special/particles",
+        "dataset/textures/special/animated",
+        # Скины
+        "dataset/skins/classic",
+        "dataset/skins/fantasy",
+        "dataset/skins/modern",
+        "dataset/skins/historical",
+        # Обработанные данные
+        "dataset/processed/16x16",
+        "dataset/processed/32x32",
+        "dataset/processed/64x64"
+    ]
+    
+    for folder in folders:
+        os.makedirs(folder, exist_ok=True)
+        print(f"Created: {folder}")
+
+if __name__ == "__main__":
+    create_dataset_structure()
+
+# 3. Создаем data_collector.py
+%%writefile data_collector.py
+import requests
+import os
+from bs4 import BeautifulSoup
+from PIL import Image
+import shutil
+import zipfile
+import tempfile
+import re
+import logging
+from create_folders import create_dataset_structure
+
+def download_texture(url, category, subcategory):
+    """
+    Скачивает текстуру и сохраняет в соответствующую категорию
+    """
+    path = f"dataset/textures/{category}/{subcategory}"
+    os.makedirs(path, exist_ok=True)
+    
+    response = requests.get(url, stream=True)
+    if response.status_code == 200:
+        filename = url.split('/')[-1]
+        with open(f"{path}/{filename}", 'wb') as f:
+            response.raw.decode_content = True
+            shutil.copyfileobj(response.raw, f)
+
+def resize_texture(filepath, size):
+    """
+    Изменяет размер текстуры до нужного разрешения
+    """
+    with Image.open(filepath) as img:
+        resized = img.resize((size, size), Image.NEAREST)
+        resized.save(filepath)
+
+def verify_texture(filepath):
+    """
+    Проверяет целостность файла
+    """
+    try:
+        with Image.open(filepath) as img:
+            img.verify()
+        return True
+    except:
+        return False 
+
+def download_minecraft_textures():
+    """
+    Скачивает текстуры из официального клиента Minecraft
+    """
+    base_url = "https://www.minecraft.net/content/dam/games/minecraft/textures"
+    logging.info(f"Скачивание текстур Minecraft с {base_url}")
+    # TODO: Добавить логику для скачивания текстур из JAR файла Minecraft
+    pass
+
+def download_planet_minecraft_textures():
+    """
+    Скачивает текстуры с Planet Minecraft
+    """
+    base_url = "https://www.planetminecraft.com/texture-packs"
+    
+    try:
+        logging.info(f"Подключение к {base_url}")
+        response = requests.get(base_url)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Находим ссылки на текстур паки
+        texture_packs = soup.find_all('a', class_='resource-link')
+        logging.info(f"Найдено {len(texture_packs)} текстур паков")
+        
+        for i, pack in enumerate(texture_packs[:10], 1):
+            pack_url = pack['href']
+            logging.info(f"Обработка пака {i}/10: {pack_url}")
+            download_texture_pack(pack_url)
+            
+    except Exception as e:
+        logging.error(f"Ошибка при скачивании текстур: {e}")
+
+def download_texture_pack(pack_url):
+    """
+    Скачивает и обрабатывает текстур пак
+    """
+    try:
+        logging.info(f"Скачивание пака: {pack_url}")
+        response = requests.get(pack_url)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        download_link = soup.find('a', {'class': 'download-link'})
+        if not download_link:
+            logging.warning(f"Не найдена ссылка на скачивание для {pack_url}")
+            return
+            
+        pack_response = requests.get(download_link['href'], stream=True)
+        if pack_response.status_code != 200:
+            logging.error(f"Ошибка скачивания пака: {pack_response.status_code}")
+            return
+            
+        with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as tmp_file:
+            for chunk in pack_response.iter_content(chunk_size=8192):
+                if chunk:
+                    tmp_file.write(chunk)
+            
+            process_texture_pack(tmp_file.name)
+            
+        os.remove(tmp_file.name)
+        
+    except Exception as e:
+        logging.error(f"Ошибка при обработке пака {pack_url}: {e}")
+
+def process_texture_pack(pack_path):
+    """
+    Обрабатывает скачанный текстур пак
+    """
+    logging.info(f"Обработка пака: {pack_path}")
+    with zipfile.ZipFile(pack_path, 'r') as zip_ref:
+        file_list = zip_ref.namelist()
+        
+        texture_categories = {
+            ('blocks/natural', r'textures/blocks/(dirt|stone|sand|gravel)\.png$'),
+            ('blocks/ores', r'textures/blocks/(diamond|gold|iron|coal|emerald)_ore\.png$'),
+            ('blocks/vegetation', r'textures/blocks/(leaves|log|grass|flower).*\.png$'),
+            ('blocks/building', r'textures/blocks/(planks|brick|glass).*\.png$'),
+            ('special/gui', r'textures/gui/.*\.png$'),
+            ('special/particles', r'textures/particle/.*\.png$'),
+            ('special/animated', r'textures/blocks/(water|lava).*\.png$')
+        }
+        
+        for file_path in file_list:
+            if not file_path.endswith('.png'):
+                continue
+                
+            for category, pattern in texture_categories:
+                if re.search(pattern, file_path, re.IGNORECASE):
+                    try:
+                        with zip_ref.open(file_path) as texture_file:
+                            texture_data = texture_file.read()
+                            save_texture(texture_data, category, os.path.basename(file_path))
+                    except Exception as e:
+                        logging.error(f"Ошибка при извлечении текстуры {file_path}: {e}")
+                    break
+
+def save_texture(texture_data, category, filename):
+    """
+    Сохраняет текстуру в соответствующую категорию
+    """
+    output_path = f"dataset/textures/{category}/{filename}"
+    
+    if os.path.exists(output_path):
+        base, ext = os.path.splitext(filename)
+        counter = 1
+        while os.path.exists(output_path):
+            output_path = f"dataset/textures/{category}/{base}_{counter}{ext}"
+            counter += 1
+    
+    try:
+        with open(output_path, 'wb') as f:
+            f.write(texture_data)
+            
+        if verify_texture(output_path):
+            logging.info(f"Сохранена текстура: {output_path}")
+        else:
+            logging.warning(f"Ошибка целостности текстуры: {output_path}")
+            os.remove(output_path)
+            
+    except Exception as e:
+        logging.error(f"Ошибка при сохранении текстуры {filename}: {e}")
+
+# 4. Создаем test_texture_download.py
+%%writefile test_texture_download.py
+import os
+from data_collector import download_planet_minecraft_textures, create_dataset_structure
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('texture_download.log'),
+        logging.StreamHandler()
+    ]
+)
+
+def test_texture_download():
+    try:
+        logging.info("Создание структуры папок...")
+        create_dataset_structure()
+        
+        logging.info("Начало скачивания текстур...")
+        download_planet_minecraft_textures()
+        
+        logging.info("Проверка результатов...")
+        check_downloaded_textures()
+        
+    except Exception as e:
+        logging.error(f"Ошибка при тестировании: {e}")
+
+def check_downloaded_textures():
+    categories = [
+        'blocks/natural',
+        'blocks/ores',
+        'blocks/vegetation',
+        'blocks/building',
+        'special/gui',
+        'special/particles',
+        'special/animated'
+    ]
+    
+    for category in categories:
+        path = f"dataset/textures/{category}"
+        if os.path.exists(path):
+            files = os.listdir(path)
+            logging.info(f"Категория {category}: {len(files)} файлов")
+        else:
+            logging.warning(f"Категория {category} не создана")
+
+# 5. Запускаем тест
+!python test_texture_download.py
+
+# 6. Проверяем структуру папок
+!tree dataset/textures
